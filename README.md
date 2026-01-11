@@ -2,6 +2,8 @@
 
 A beautiful CLI tool to help you rebalance your Brazilian stock portfolio based on priority weights.
 
+<img src="https://github.com/guscsales/rebalance/blob/main/docs/images/app-home.png?raw=true" />
+
 ## 🚀 Quick Start
 
 ### Installation
@@ -24,13 +26,13 @@ Edit `rebalance.config.ts` to configure your assets:
 
 ```typescript
 export const config: Config = {
-  allowSell: false,        // Set to true to see sell recommendations
-  currency: "brl",         // Currency (BRL only for now)
-  assets: [
-    { ticker: "BBAS3", priority: 5, quantity: 477 },
-    { ticker: "XPLG11", priority: 8, quantity: 181 },
-    // Add your assets here
-  ],
+	allowSell: false, // Set to true to see sell recommendations
+	currency: "brl", // Currency (BRL only for now)
+	assets: [
+		{ticker: "BBAS3", priority: 5, quantity: 477},
+		{ticker: "XPLG11", priority: 8, quantity: 181},
+		// Add your assets here
+	],
 };
 ```
 
@@ -71,4 +73,3 @@ bun dev  # Watch mode
 ---
 
 Made with ❤️ for Brazilian investors
-

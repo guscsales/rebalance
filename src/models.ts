@@ -1,3 +1,5 @@
+export type AssetType = "stock" | "reit";
+
 export interface Asset {
 	ticker: string;
 	priority: number;

@@ -1,15 +1,14 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { Box, Text } from "ink";
 import Spinner from "ink-spinner";
 import boxen from "boxen";
 import { useQuery } from "@tanstack/react-query";
 import { fetchAllPrices } from "../utils/fetchPrices";
 import { loadConfig } from "../utils/loadConfig";
-import { Currency } from "../models";
+import type { Currency } from "../models";
 import { calculateRebalance, calculateTargetWeights } from "../services/rebalance";
 import type { RebalanceInput } from "../domain/types";
 import Table from "./Table";
-// @ts-ignore - importing JSON
 import packageJson from "../../package.json";
 
 const APP_VERSION = packageJson.version;
@@ -89,7 +88,9 @@ export default function App({ initialValue }: AppProps) {
 	const config = configQuery.data;
 	const availableBalance = config?.balance ?? 0;
 	const assets = config?.assets || [];
-	const prices = pricesQuery.data || {};
+	const priceData = pricesQuery.data;
+	const prices = priceData?.prices || {};
+	const assetTypes = priceData?.types || {};
 
 	// Calculate rebalance plan using the service
 	let tradePlan = null;
@@ -224,6 +225,21 @@ export default function App({ initialValue }: AppProps) {
 	// Calculate total portfolio value after trades
 	const totalAfterTrades = tradePlan.totalCurrentValue + tradePlan.totalBuys - tradePlan.totalSells;
 
+	// Calculate allocation by type
+	const allocationByType: Record<string, { current: number; after: number; target: number }> = {
+		stock: { current: 0, after: 0, target: 0 },
+		reit: { current: 0, after: 0, target: 0 },
+	};
+
+	tradePlan.assets.forEach((asset) => {
+		const assetType = assetTypes[asset.ticker] || "stock";
+		const valueAfterTrade = asset.currentValue + asset.tradeAmount;
+
+		allocationByType[assetType].current += asset.currentValue;
+		allocationByType[assetType].after += valueAfterTrade;
+		allocationByType[assetType].target += asset.targetValue;
+	});
+
 	// Prepare table data with formatted values
 	const tableData = tradePlan.assets.map((asset) => {
 		const quantity = Math.floor(asset.currentValue / asset.price);
@@ -237,8 +253,8 @@ export default function App({ initialValue }: AppProps) {
 
 		// Calculate allocated percentage after trades
 		const valueAfterTrade = asset.currentValue + asset.tradeAmount;
-		const allocatedPercent = totalAfterTrades > 0 
-			? (valueAfterTrade / totalAfterTrades) * 100 
+		const allocatedPercent = totalAfterTrades > 0
+			? (valueAfterTrade / totalAfterTrades) * 100
 			: 0;
 
 		return {
@@ -303,6 +319,37 @@ export default function App({ initialValue }: AppProps) {
 		}
 	);
 
+	// Prepare allocation by type table
+	const typeTableData = Object.entries(allocationByType).map(([type, values]) => {
+		const currentPercent = tradePlan.totalCurrentValue > 0
+			? (values.current / tradePlan.totalCurrentValue) * 100
+			: 0;
+		const afterPercent = totalAfterTrades > 0
+			? (values.after / totalAfterTrades) * 100
+			: 0;
+		const targetPercent = tradePlan.referenceTotal > 0
+			? (values.target / tradePlan.referenceTotal) * 100
+			: 0;
+
+		return {
+			type: type === "stock" ? "📈 Stocks" : "🏢 REITs",
+			currentPercent: `${currentPercent.toFixed(1)}%`,
+			targetPercent: `${targetPercent.toFixed(1)}%`,
+			afterPercent: `${afterPercent.toFixed(1)}%`,
+			currentValue: values.current.toFixed(2),
+			afterValue: values.after.toFixed(2),
+		};
+	});
+
+	const typeTableColumns = [
+		{ key: "type", label: "Type", width: 12 },
+		{ key: "currentPercent", label: "Current %", width: 11, align: "right" as const },
+		{ key: "targetPercent", label: "Target %", width: 10, align: "right" as const },
+		{ key: "afterPercent", label: "After %", width: 9, align: "right" as const },
+		{ key: "currentValue", label: "Current R$", width: 13, align: "right" as const },
+		{ key: "afterValue", label: "After R$", width: 13, align: "right" as const },
+	];
+
 	return (
 		<>
 			{appInfoBox()}
@@ -313,7 +360,20 @@ export default function App({ initialValue }: AppProps) {
 					</Text>
 				</Box>
 
-				{/* Table */}
+				{/* Allocation by Type Table */}
+				<Box marginBottom={2}>
+					<Box flexDirection="column">
+						<Box marginBottom={1}>
+							<Text bold color="magenta">📊 Allocation by Type</Text>
+						</Box>
+						<Table data={typeTableData} columns={typeTableColumns} />
+					</Box>
+				</Box>
+
+				{/* Assets Table */}
+				<Box marginBottom={1}>
+					<Text bold color="cyan">📋 Assets Detail</Text>
+				</Box>
 				<Table data={tableData} columns={tableColumns} />
 
 				{/* Summary Box */}

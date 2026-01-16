@@ -221,24 +221,33 @@ export default function App({ initialValue }: AppProps) {
 		);
 	}
 
+	// Calculate total portfolio value after trades
+	const totalAfterTrades = tradePlan.totalCurrentValue + tradePlan.totalBuys - tradePlan.totalSells;
+
 	// Prepare table data with formatted values
 	const tableData = tradePlan.assets.map((asset) => {
 		const quantity = Math.floor(asset.currentValue / asset.price);
 		const tradeSign = asset.tradeAmount > 0 ? "+" : "";
-		const tradeDisplay = asset.tradeAmount === 0 
-			? "0,00" 
+		const tradeDisplay = asset.tradeAmount === 0
+			? "0,00"
 			: `${tradeSign}${asset.tradeAmount.toFixed(2)}`;
 		const tradeQtyDisplay = asset.tradeQuantity === 0
 			? "0"
 			: `${asset.tradeQuantity > 0 ? "+" : ""}${asset.tradeQuantity}`;
+
+		// Calculate allocated percentage after trades
+		const valueAfterTrade = asset.currentValue + asset.tradeAmount;
+		const allocatedPercent = totalAfterTrades > 0 
+			? (valueAfterTrade / totalAfterTrades) * 100 
+			: 0;
 
 		return {
 			ticker: asset.ticker,
 			qty: String(quantity),
 			price: asset.price.toFixed(2),
 			priority: String(asset.priority),
-			targetPct: `${(asset.targetWeight * 100).toFixed(1)}%`,
-			targetValue: asset.targetValue.toFixed(2),
+			targetPercent: `${(asset.targetWeight * 100).toFixed(1)}%`,
+			allocatedPercent: `${allocatedPercent.toFixed(1)}%`,
 			currentValue: asset.currentValue.toFixed(2),
 			tradeAmount: tradeDisplay,
 			tradeQty: tradeQtyDisplay,
@@ -251,8 +260,8 @@ export default function App({ initialValue }: AppProps) {
 		{ key: "qty", label: "Qty", width: 6, align: "right" as const },
 		{ key: "price", label: "Price R$", width: 10, align: "right" as const },
 		{ key: "priority", label: "Priority", width: 8, align: "right" as const },
-		{ key: "targetPct", label: "Target %", width: 9, align: "right" as const },
-		{ key: "targetValue", label: "Target R$", width: 12, align: "right" as const },
+		{ key: "targetPercent", label: "Target %", width: 9, align: "right" as const },
+		{ key: "allocatedPercent", label: "Allocated %", width: 12, align: "right" as const },
 		{ key: "currentValue", label: "Current R$", width: 12, align: "right" as const },
 		{ key: "tradeAmount", label: "Trade R$", width: 11, align: "right" as const },
 		{ key: "tradeQty", label: "Trade Qty", width: 10, align: "right" as const },
@@ -260,11 +269,11 @@ export default function App({ initialValue }: AppProps) {
 
 	const summaryLines = [
 		`💰 Current Portfolio:  R$ ${tradePlan.totalCurrentValue.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`,
-		`📊 Reference Total:    R$ ${tradePlan.referenceTotal.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`,
 		`💵 Available Cash:     R$ ${availableBalance.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`,
-		`💰 Buy Budget:         R$ ${tradePlan.buyBudget.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`,
-		`📈 Total Buys:          R$ ${tradePlan.totalBuys.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`,
-		`📉 Total Sells:         R$ ${tradePlan.totalSells.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`,
+		`📈 Total Buys:         R$ ${tradePlan.totalBuys.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`,
+		`📉 Total Sells:        R$ ${tradePlan.totalSells.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`,
+		``,
+		`💼 Portfolio After:    R$ ${totalAfterTrades.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`,
 	];
 
 	// Validation warnings

@@ -44,52 +44,88 @@ function calculateAssetStates(
 
 /**
  * Allocate buy budget to underweight assets proportionally by priority
+ * Allocates whole shares only, not fractional amounts
  */
 function allocateBuyBudget(
 	underweightAssets: AssetState[],
-	buyBudget: number
+	buyBudget: number,
+	prices: Record<string, number>
 ): Map<string, number> {
-	const allocations = new Map<string, number>();
+	const shareAllocations = new Map<string, number>(); // ticker -> number of shares
 
 	if (underweightAssets.length === 0 || buyBudget <= 0) {
-		return allocations;
+		return new Map(); // Return empty map (will be converted to R$ amounts later)
 	}
 
-	// Calculate total priority for underweight assets
-	const totalPriority = underweightAssets.reduce(
-		(sum, asset) => sum + asset.priority,
-		0
-	);
-
-	if (totalPriority === 0) {
-		return allocations;
-	}
-
-	// Allocate proportionally by priority
-	const initialAllocations = underweightAssets.map((asset) => {
-		const allocationRatio = asset.priority / totalPriority;
-		const idealBuy = asset.difference; // Positive difference = amount needed
-		const allocatedAmount = Math.min(
-			allocationRatio * buyBudget,
-			idealBuy
-		);
-		return { ticker: asset.ticker, amount: allocatedAmount };
+	// Initialize share allocations to 0
+	underweightAssets.forEach((asset) => {
+		shareAllocations.set(asset.ticker, 0);
 	});
 
-	// Calculate total allocated
-	const totalAllocated = initialAllocations.reduce(
-		(sum, a) => sum + a.amount,
-		0
-	);
+	let remainingBudget = buyBudget;
+	const maxIterations = 10000; // High limit since we're buying 1 share at a time
 
-	// Scale down if we exceeded budget (safety check)
-	const scaleFactor =
-		totalAllocated > buyBudget && totalAllocated > 0
-			? buyBudget / totalAllocated
-			: 1;
+	// Iteratively buy shares until budget is exhausted
+	for (let iteration = 0; iteration < maxIterations; iteration++) {
+		// Find assets that can still accept more shares
+		const assetsNeedingMore = underweightAssets.filter((asset) => {
+			const price = prices[asset.ticker] || 0;
+			if (price === 0 || price > remainingBudget) {
+				return false; // Can't afford even 1 share
+			}
 
-	initialAllocations.forEach(({ ticker, amount }) => {
-		allocations.set(ticker, amount * scaleFactor);
+			const currentShares = shareAllocations.get(asset.ticker) || 0;
+			const currentAllocation = currentShares * price;
+			const remaining = asset.difference - currentAllocation;
+			return remaining >= price; // Can fit at least 1 more share
+		});
+
+		if (assetsNeedingMore.length === 0) {
+			// No assets can accept more shares with remaining budget
+			break;
+		}
+
+		// Calculate total priority for assets that can still accept shares
+		const totalPriority = assetsNeedingMore.reduce(
+			(sum, asset) => sum + asset.priority,
+			0
+		);
+
+		// Calculate allocation scores (priority / price ratio)
+		// Higher priority and lower price = higher score
+		const assetScores = assetsNeedingMore.map((asset) => {
+			const price = prices[asset.ticker] || 0;
+			const priorityWeight = totalPriority > 0 ? asset.priority / totalPriority : 1 / assetsNeedingMore.length;
+			
+			// Score: priority weight divided by price (normalized)
+			// This favors high priority and affordable shares
+			return {
+				ticker: asset.ticker,
+				score: priorityWeight / price,
+				price: price,
+			};
+		});
+
+		// Sort by score descending
+		assetScores.sort((a, b) => b.score - a.score);
+
+		// Buy 1 share of the highest scoring asset
+		const winner = assetScores[0];
+		if (winner.price <= remainingBudget) {
+			const currentShares = shareAllocations.get(winner.ticker) || 0;
+			shareAllocations.set(winner.ticker, currentShares + 1);
+			remainingBudget -= winner.price;
+		} else {
+			// Can't afford any more shares
+			break;
+		}
+	}
+
+	// Convert share allocations to R$ amounts
+	const allocations = new Map<string, number>();
+	shareAllocations.forEach((shares, ticker) => {
+		const price = prices[ticker] || 0;
+		allocations.set(ticker, shares * price);
 	});
 
 	return allocations;
@@ -193,7 +229,7 @@ export function calculateRebalance(input: RebalanceInput): TradePlan {
 	});
 
 	// STEP 9: Allocate buy budget to underweight assets
-	const buyAllocations = allocateBuyBudget(underweightAssets, buyBudget);
+	const buyAllocations = allocateBuyBudget(underweightAssets, buyBudget, prices);
 
 	// Update trade amounts for underweight assets
 	assetTrades.forEach((trade) => {

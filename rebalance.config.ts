@@ -11,8 +11,8 @@ export interface Config {
 export const config: Config = {
 	allowSell: false,
 	currency: "brl",
-	portfolioValue: 95555.49,
-	balance: 0,
+	portfolioValue: 95917.85,
+	balance: 27000,
 	assets: [
 		{ticker: "H1SB34", priority: 3, quantity: 113},
 		{ticker: "M1TA34", priority: 1, quantity: 48},

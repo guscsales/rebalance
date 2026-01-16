@@ -40,22 +40,6 @@ export const config: Config = {
 - **priority**: Weight/priority (higher = larger allocation)
 - **quantity**: Number of shares you currently own
 
-## 🎮 Controls
-
-- **Enter**: Submit portfolio value / Confirm
-- **r**: Refresh config & prices (edit config, then press `r`)
-- **Esc**: Exit
-
-## ✨ Features
-
-- 🎨 Beautiful CLI interface with Ink (React for CLI)
-- 💰 Auto-formatted Brazilian currency input
-- 📊 Real-time price fetching from Yahoo Finance
-- 🔄 Hot-reload config (edit & press `r` to reload)
-- 📈 Summary box with key metrics
-- 🚫 "No Sell" mode (only shows buy recommendations)
-- 🎯 Calculates exact quantities to buy
-
 ## 📦 Tech Stack
 
 - **Bun** - Runtime

@@ -1,12 +1,14 @@
-import React, { useState } from "react";
-import { Box, Text, useApp, useInput, useStdin } from "ink";
+import React, { useState, useEffect } from "react";
+import { Box, Text } from "ink";
 import Spinner from "ink-spinner";
 import boxen from "boxen";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { fetchAllPrices } from "../utils/fetchPrices.js";
-import { loadConfig } from "../utils/loadConfig.js";
-import { Asset, Currency } from "../models.js";
-import CurrencyInput from "./CurrencyInput.js";
+import { useQuery } from "@tanstack/react-query";
+import { fetchAllPrices } from "../utils/fetchPrices";
+import { loadConfig } from "../utils/loadConfig";
+import { Currency } from "../models";
+import { calculateRebalance, calculateTargetWeights } from "../services/rebalance";
+import type { RebalanceInput } from "../domain/types";
+import Table from "./Table";
 // @ts-ignore - importing JSON
 import packageJson from "../../package.json";
 
@@ -17,34 +19,24 @@ const CURRENCY_LABELS: Record<Currency, string> = {
 	// TODO: add USD in the future
 };
 
-interface CalculatedAsset extends Asset {
-	price: number;
-	currentValue: number;
-	weight: number;
-	target: number;
-	diff: number;
-	diffQty: number;
-}
-
 interface AppProps {
 	initialValue?: string;
 }
 
 export default function App({ initialValue }: AppProps) {
-	const { exit } = useApp();
-	const { isRawModeSupported } = useStdin();
-	const queryClient = useQueryClient();
-	const [portfolioValue, setPortfolioValue] = useState(initialValue || "");
-	const [shouldFetch, setShouldFetch] = useState(!!initialValue);
+	const [portfolioValue, setPortfolioValue] = useState("");
+	const [balance, setBalance] = useState("");
+	const [shouldFetch, setShouldFetch] = useState(false);
+	const [configInitialized, setConfigInitialized] = useState(false);
 
-	// React Query for loading config (loads immediately, reloads on refresh)
+	// React Query for loading config
 	const configQuery = useQuery({
 		queryKey: ["config"],
 		queryFn: loadConfig,
-		staleTime: 0, // Always refetch when invalidated
+		staleTime: 0,
 	});
 
-	// React Query for fetching prices (depends on config)
+	// React Query for fetching prices
 	const pricesQuery = useQuery({
 		queryKey: ["prices", configQuery.data?.assets.map((a) => a.ticker)],
 		queryFn: () =>
@@ -54,82 +46,84 @@ export default function App({ initialValue }: AppProps) {
 		retry: 2,
 	});
 
-	useInput(
-		(input, key) => {
-			if (key.escape || (key.ctrl && input === "c")) {
-				exit();
-			}
-			// Press 'r' to refresh config and prices
-			if (input === "r" && pricesQuery.data) {
-				// Invalidate both queries to force refetch
-				queryClient.invalidateQueries({ queryKey: ["config"] });
-				queryClient.invalidateQueries({ queryKey: ["prices"] });
-			}
-		},
-		{ isActive: isRawModeSupported }
-	);
-
-	// Parse Brazilian number format (123.456,78 → 123456.78)
-	const parseNumber = (value: string): number => {
-		const cleaned = value.replace(/\./g, "").replace(",", ".");
-		return parseFloat(cleaned) || 0;
+	// Format number to Brazilian currency string (123456.78 → "123.456,78")
+	const formatCurrency = (value: number): string => {
+		if (value === 0) return "0,00";
+		const [intPart, decPart = "00"] = value.toFixed(2).split(".");
+		const formattedInt = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+		return `${formattedInt},${decPart}`;
 	};
 
-	const handleSubmit = (value: string) => {
-		const numValue = parseNumber(value);
-		if (isNaN(numValue) || numValue <= 0) {
-			return;
+	// Auto-set values from config
+	useEffect(() => {
+		if (configInitialized || !configQuery.data) return;
+
+		const config = configQuery.data;
+
+		if (initialValue) {
+			setPortfolioValue(initialValue);
+			setBalance(config.balance !== undefined ? formatCurrency(config.balance) : "");
+			setShouldFetch(true);
+			setConfigInitialized(true);
+		} else if (
+			config.portfolioValue !== undefined &&
+			config.balance !== undefined
+		) {
+			setPortfolioValue(formatCurrency(config.portfolioValue));
+			setBalance(formatCurrency(config.balance));
+			setShouldFetch(true);
+			setConfigInitialized(true);
+		} else if (config.portfolioValue !== undefined) {
+			setPortfolioValue(formatCurrency(config.portfolioValue));
+			setBalance("0,00");
+			setShouldFetch(true);
+			setConfigInitialized(true);
+		} else {
+			setPortfolioValue("0,00");
+			setBalance("0,00");
+			setShouldFetch(true);
+			setConfigInitialized(true);
 		}
-		setPortfolioValue(value);
-		setShouldFetch(true);
-	};
+	}, [configQuery.data, initialValue, configInitialized]);
 
 	const config = configQuery.data;
-	const totalValue = parseNumber(portfolioValue);
+	const availableBalance = config?.balance ?? 0;
 	const assets = config?.assets || [];
-	const totalPriority = assets.reduce((sum, a) => sum + a.priority, 0);
 	const prices = pricesQuery.data || {};
 
-	const calculatedAssets: CalculatedAsset[] = assets.map((asset) => {
-		const price = prices[asset.ticker] || 0;
-		const currentValue = asset.quantity * price;
-		const weight = totalPriority > 0 ? asset.priority / totalPriority : 0;
-		const target = weight * totalValue;
-		let diff = target - currentValue;
+	// Calculate rebalance plan using the service
+	let tradePlan = null;
+	if (config && pricesQuery.data && Object.keys(prices).length > 0) {
+		const targetWeights = calculateTargetWeights(assets);
 
-		// No-sell mode: clamp negative differences to 0
-		if (!config?.allowSell && diff < 0) {
-			diff = 0;
-		}
+		const input: RebalanceInput = {
+			assets,
+			prices,
+			targetWeights,
+			availableCash: availableBalance,
+			allowSell: config.allowSell ?? false,
+		};
 
-		const diffQty = price > 0 ? Math.floor(diff / price) : 0;
-
-		return { ...asset, price, currentValue, weight, target, diff, diffQty };
-	});
-
-	const totalCurrent = calculatedAssets.reduce(
-		(sum, a) => sum + a.currentValue,
-		0
-	);
-	const totalToBuy = calculatedAssets.reduce((sum, a) => sum + a.diff, 0);
+		tradePlan = calculateRebalance(input);
+	}
 
 	function appInfoBox() {
-		const allowSellStatus = config?.allowSell
-			? "✅ Enabled - Will show sell recommendations"
-			: "🚫 Disabled - Only shows buy recommendations";
-
 		const currencyLabel = config?.currency
 			? CURRENCY_LABELS[config.currency]
 			: "Loading...";
+
+		const allowSellStatus = config?.allowSell
+			? "✅ Enabled - Selling allowed for all assets"
+			: "🚫 Disabled - Selling locked for all assets";
 
 		const appInfoBox = boxen(
 			[
 				"💰 Portfolio Rebalancer",
 				`   v${APP_VERSION}`,
 				"",
-				`⚙️  Allow Sell: ${allowSellStatus}`,
 				`💵 Currency: ${currencyLabel}`,
 				`📊 Assets: ${config?.assets.length || 0} configured`,
+				`⚙️  Allow Sell: ${allowSellStatus}`,
 			].join("\n"),
 			{
 				padding: 1,
@@ -140,7 +134,6 @@ export default function App({ initialValue }: AppProps) {
 			}
 		);
 
-		// Loading config state
 		if (configQuery.isLoading) {
 			return (
 				<Box flexDirection="column" padding={1}>
@@ -157,30 +150,20 @@ export default function App({ initialValue }: AppProps) {
 		return (
 			<Box flexDirection="column" padding={1}>
 				<Text>{appInfoBox}</Text>
-
-				<Box>
-					<Text bold>Enter your total portfolio value: </Text>
-					<CurrencyInput
-						value={portfolioValue}
-						onChange={setPortfolioValue}
-						onSubmit={handleSubmit}
-						currency={config?.currency || "brl"}
-						placeholder="0,00"
-					/>
+				<Box marginBottom={1}>
+					<Text dimColor>Portfolio Value: </Text>
+					<Text color="green">
+						{config?.currency === "brl" ? "R$" : "$"} {portfolioValue}
+					</Text>
 				</Box>
-
-				<Box marginTop={1}>
-					<Text dimColor>
-						Type numbers • Press Enter to continue • Esc to exit
+				<Box>
+					<Text dimColor>Available Balance: </Text>
+					<Text color="green">
+						{config?.currency === "brl" ? "R$" : "$"} {balance}
 					</Text>
 				</Box>
 			</Box>
 		);
-	}
-
-	// Input state (before fetching)
-	if (!shouldFetch) {
-		return appInfoBox();
 	}
 
 	// Loading state
@@ -190,24 +173,14 @@ export default function App({ initialValue }: AppProps) {
 		pricesQuery.isLoading ||
 		pricesQuery.isFetching
 	) {
-		const isRefreshing =
-			(configQuery.isFetching && !configQuery.isLoading) ||
-			(pricesQuery.isFetching && !pricesQuery.isLoading);
-
 		return (
 			<Box flexDirection="column" padding={1}>
 				<Box marginBottom={1}>
 					<Text color="cyan">
 						<Spinner type="dots" />
 					</Text>
-					<Text>
-						{" "}
-						{isRefreshing
-							? "Refreshing config & prices..."
-							: "Loading config & fetching prices..."}
-					</Text>
+					<Text> Loading config & fetching prices...</Text>
 				</Box>
-
 				<Box>
 					<Text dimColor>
 						{configQuery.isFetching
@@ -232,32 +205,85 @@ export default function App({ initialValue }: AppProps) {
 				<Box>
 					<Text dimColor>{String(error)}</Text>
 				</Box>
+			</Box>
+		);
+	}
+
+	// Results state
+	if (!tradePlan) {
+		return (
+			<Box flexDirection="column" padding={1}>
+				{appInfoBox()}
 				<Box marginTop={1}>
-					<Text>Press </Text>
-					<Text color="cyan" bold>
-						r
-					</Text>
-					<Text> to retry • </Text>
-					<Text color="yellow">Esc</Text>
-					<Text> to exit</Text>
+					<Text color="yellow">Waiting for price data...</Text>
 				</Box>
 			</Box>
 		);
 	}
 
-	// Build table header
-	const header =
-		"Ticker   | Qty   | Price R$  | Priority | Target % | Target R$   | Current R$  | Diff R$     | Diff Qty";
-	const separator =
-		"---------|-------|-----------|----------|----------|-------------|-------------|-------------|----------";
+	// Prepare table data with formatted values
+	const tableData = tradePlan.assets.map((asset) => {
+		const quantity = Math.floor(asset.currentValue / asset.price);
+		const tradeSign = asset.tradeAmount > 0 ? "+" : "";
+		const tradeDisplay = asset.tradeAmount === 0 
+			? "0,00" 
+			: `${tradeSign}${asset.tradeAmount.toFixed(2)}`;
+		const tradeQtyDisplay = asset.tradeQuantity === 0
+			? "0"
+			: `${asset.tradeQuantity > 0 ? "+" : ""}${asset.tradeQuantity}`;
 
-	// Results state
-	const summaryBox = boxen(
-		[
-			`💰 Current Portfolio:  R$ ${totalCurrent.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`,
-			`🎯 Target Portfolio:   R$ ${totalValue.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`,
-			`📊 Total to Invest:    R$ ${totalToBuy.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`,
-		].join("\n"),
+		return {
+			ticker: asset.ticker,
+			qty: String(quantity),
+			price: asset.price.toFixed(2),
+			priority: String(asset.priority),
+			targetPct: `${(asset.targetWeight * 100).toFixed(1)}%`,
+			targetValue: asset.targetValue.toFixed(2),
+			currentValue: asset.currentValue.toFixed(2),
+			tradeAmount: tradeDisplay,
+			tradeQty: tradeQtyDisplay,
+			_tradeAmount: asset.tradeAmount, // For color logic
+		};
+	});
+
+	const tableColumns = [
+		{ key: "ticker", label: "Ticker", width: 10 },
+		{ key: "qty", label: "Qty", width: 6, align: "right" as const },
+		{ key: "price", label: "Price R$", width: 10, align: "right" as const },
+		{ key: "priority", label: "Priority", width: 8, align: "right" as const },
+		{ key: "targetPct", label: "Target %", width: 9, align: "right" as const },
+		{ key: "targetValue", label: "Target R$", width: 12, align: "right" as const },
+		{ key: "currentValue", label: "Current R$", width: 12, align: "right" as const },
+		{ key: "tradeAmount", label: "Trade R$", width: 11, align: "right" as const },
+		{ key: "tradeQty", label: "Trade Qty", width: 10, align: "right" as const },
+	];
+
+	const summaryLines = [
+		`💰 Current Portfolio:  R$ ${tradePlan.totalCurrentValue.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`,
+		`📊 Reference Total:    R$ ${tradePlan.referenceTotal.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`,
+		`💵 Available Cash:     R$ ${availableBalance.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`,
+		`💰 Buy Budget:         R$ ${tradePlan.buyBudget.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`,
+		`📈 Total Buys:          R$ ${tradePlan.totalBuys.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`,
+		`📉 Total Sells:         R$ ${tradePlan.totalSells.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`,
+	];
+
+	// Validation warnings
+	if (tradePlan.totalBuys > tradePlan.buyBudget) {
+		summaryLines.push(
+			"",
+			`⚠️  ERROR: Total buys exceed buy budget!`
+		);
+	}
+
+	if (tradePlan.totalBuys < tradePlan.buyBudget && tradePlan.totalBuys > 0) {
+		const remaining = tradePlan.buyBudget - tradePlan.totalBuys;
+		summaryLines.push(
+			"",
+			`ℹ️  Remaining budget: R$ ${remaining.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`
+		);
+	}
+
+	const summaryBox = boxen(summaryLines.join("\n"),
 		{
 			padding: 1,
 			margin: { top: 1, bottom: 1, left: 0, right: 0 },
@@ -270,43 +296,16 @@ export default function App({ initialValue }: AppProps) {
 
 	return (
 		<>
-		{appInfoBox()}
+			{appInfoBox()}
 			<Box flexDirection="column" padding={1}>
 				<Box marginBottom={1}>
 					<Text bold color="cyan">
 						💰 Portfolio Rebalancer
 					</Text>
-					<Text dimColor> • Press </Text>
-					<Text color="cyan">r</Text>
-					<Text dimColor> to refresh (config + prices) • </Text>
-					<Text color="yellow">Esc</Text>
-					<Text dimColor> to exit</Text>
 				</Box>
 
 				{/* Table */}
-				<Box flexDirection="column">
-					<Text bold>{header}</Text>
-					<Text dimColor>{separator}</Text>
-
-					{calculatedAssets.map((asset) => {
-						const row = `${asset.ticker.padEnd(8)} | ${String(asset.quantity).padStart(5)} | R$ ${asset.price.toFixed(2).padStart(7)} | ${String(asset.priority).padEnd(8)} | ${(asset.weight * 100).toFixed(1).padStart(7)}% | R$ ${asset.target.toFixed(2).padStart(9)} | R$ ${asset.currentValue.toFixed(2).padStart(9)} | `;
-
-						const diffColor = asset.diff > 0 ? "green" : "yellow";
-
-						return (
-							<Box key={asset.ticker}>
-								<Text>{row}</Text>
-								<Text color={diffColor}>
-									R$ {asset.diff.toFixed(2).padStart(9)}
-								</Text>
-								<Text> | </Text>
-								<Text color={diffColor} bold={asset.diffQty > 0}>
-									{String(asset.diffQty).padStart(8)}
-								</Text>
-							</Box>
-						);
-					})}
-				</Box>
+				<Table data={tableData} columns={tableColumns} />
 
 				{/* Summary Box */}
 				<Text>{summaryBox}</Text>
